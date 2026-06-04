@@ -16,6 +16,7 @@ class VectorStore:
 
     COLLECTION_CASES = "reference_cases"
     COLLECTION_COPIES = "generated_copies"
+    COLLECTION_NOVEL = "novel_knowledge"
 
     def __init__(
         self,
@@ -43,6 +44,12 @@ class VectorStore:
             name=self.COLLECTION_COPIES,
             metadata={"hnsw:space": "cosine"},
         )
+        self._novel = self._client.get_or_create_collection(
+            name=self.COLLECTION_NOVEL,
+            metadata={"hnsw:space": "cosine"},
+        )
+
+    # ─── Reference case operations ────────────────────────
 
     def add_case(
         self,
@@ -123,6 +130,46 @@ class VectorStore:
 
     def count_copies(self) -> int:
         return self._copies.count()
+
+    def count_novel(self) -> int:
+        return self._novel.count()
+
+    # ─── Novel knowledge operations ────────────────────────
+
+    def add_novel_chunk(self, doc_id: str, text: str, metadata: dict | None = None) -> None:
+        """Index a novel knowledge chunk in the dedicated novel collection."""
+        meta = metadata or {}
+        self._novel.add(
+            ids=[doc_id],
+            documents=[text],
+            metadatas=[meta],
+        )
+        logger.debug("Added novel chunk %s", doc_id)
+
+    def search_novel_chunks(
+        self,
+        query: str,
+        n_results: int = 5,
+        where: dict | None = None,
+    ) -> list[dict]:
+        """Search novel knowledge by semantic similarity."""
+        results = self._novel.query(
+            query_texts=[query],
+            n_results=n_results,
+            where=where,
+        )
+
+        docs = []
+        if results["ids"] and results["ids"][0]:
+            for i, doc_id in enumerate(results["ids"][0]):
+                docs.append({
+                    "id": doc_id,
+                    "text": results["documents"][0][i] if results["documents"] else "",
+                    "metadata": results["metadatas"][0][i] if results["metadatas"] else {},
+                    "distance": results["distances"][0][i] if results["distances"] else 0,
+                })
+        return docs
+
 
 
 # Singleton

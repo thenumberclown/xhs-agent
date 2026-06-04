@@ -55,7 +55,13 @@ EXTRACT_USER = """请分析以下小说章节，提取宣发关键信息：
 
 
 class ChapterExtractor:
-    """Extracts structured metadata from a novel chapter for copy generation."""
+    """Extracts structured metadata from a novel chapter for copy generation.
+
+    For long chapters, splits into chunks to avoid LLM timeout on limited hardware.
+    """
+
+    CHUNK_SIZE = 1800       # chars per chunk — keeps LLM input within GPU-friendly range
+    CHUNK_OVERLAP = 200     # overlap between chunks to preserve context
 
     def __init__(self, client: OllamaClient | None = None) -> None:
         self.client = client or get_client()
@@ -63,26 +69,100 @@ class ChapterExtractor:
     def extract(self, title: str, body: str) -> dict:
         """Extract key details from a chapter.
 
-        Args:
-            title: Chapter title
-            body: Full chapter text
-
-        Returns:
-            Structured extraction result
+        Chapters <= CHUNK_SIZE are processed directly.
+        Longer chapters are split into overlapping chunks, each extracted separately,
+        then merged.
         """
-        # Truncate if too long (keep first 2500 chars + last 800 for ending)
-        if len(body) > 4000:
-            body = body[:2500] + "\n\n...\n\n" + body[-800:]
+        word_count = len(body)
 
+        if word_count <= self.CHUNK_SIZE:
+            return self._extract_single(title, body, word_count)
+
+        # Chunked extraction for long chapters
+        chunks = self._smart_chunk(body)
+        logger.info("Chapter '%s' split into %d chunks (%d chars total)",
+                     title, len(chunks), word_count)
+
+        all_anomalies: list[dict] = []
+        all_moments: list[str] = []
+        all_quotes: list[str] = []
+        all_scenes: list[str] = []
+        all_hooks: list[str] = []
+        all_tones: list[str] = []
+        one_liner = ""
+        emotional_arc = ""
+
+        for i, chunk in enumerate(chunks):
+            chunk_title = f"{title} [片段{i+1}/{len(chunks)}]"
+            result = self._extract_single(chunk_title, chunk, len(chunk))
+
+            # Collect structured data
+            all_anomalies.extend(result.get("anomalies", []))
+            all_scenes.extend(result.get("core_scenes", []))
+            all_hooks.extend(result.get("hook_elements", []))
+            all_tones.extend(result.get("tone_keywords", []))
+
+            for m in result.get("character_moments", []):
+                if isinstance(m, dict):
+                    all_moments.append(m.get("moment", str(m)))
+                elif isinstance(m, str) and m:
+                    all_moments.append(m)
+
+            for q in result.get("quotable_lines", []):
+                if q and q not in all_quotes:
+                    all_quotes.append(q)
+
+            # Use one_liner from first chunk (sets the scene)
+            if i == 0 and result.get("one_liner"):
+                one_liner = result["one_liner"]
+
+            # Use emotional_arc from last chunk (has the ending)
+            if i == len(chunks) - 1 and result.get("emotional_arc"):
+                emotional_arc = result["emotional_arc"]
+
+        # Deduplicate anomalies by what field
+        seen_what = set()
+        unique_anomalies = []
+        for a in all_anomalies:
+            what = a.get("what", str(a)) if isinstance(a, dict) else str(a)
+            if what not in seen_what:
+                seen_what.add(what)
+                unique_anomalies.append(a if isinstance(a, dict) else {"what": what})
+
+        # Deduplicate and limit
+        unique_scenes = list(dict.fromkeys(all_scenes))[:3]
+        unique_hooks = list(dict.fromkeys(all_hooks))[:5]
+        unique_tones = list(dict.fromkeys(all_tones))[:5]
+
+        merged = {
+            "title": title,
+            "one_liner": one_liner or (unique_hooks[0] if unique_hooks else ""),
+            "core_scenes": unique_scenes,
+            "anomalies": unique_anomalies[:5],
+            "character_moments": all_moments[:5],
+            "quotable_lines": all_quotes[:5],
+            "emotional_arc": emotional_arc,
+            "hook_elements": unique_hooks,
+            "tone_keywords": unique_tones,
+            "word_count": word_count,
+        }
+
+        logger.info("Merged extraction: %d anomalies, %d moments, %d quotes",
+                     len(merged["anomalies"]), len(merged["character_moments"]),
+                     len(merged["quotable_lines"]))
+        return merged
+
+    def _extract_single(self, title: str, body: str, word_count: int) -> dict:
+        """Run a single LLM extraction on a (possibly chunked) body."""
         messages = [
             {"role": "system", "content": EXTRACT_SYSTEM},
             {"role": "user", "content": EXTRACT_USER.format(title=title, body=body)},
         ]
 
         try:
-            result = self.client.chat_json(messages, temperature=0.3, max_tokens=2048)
-            result["word_count"] = len(body)
-            logger.info("Extracted details from chapter: %s", title)
+            result = self.client.chat_json(messages, temperature=0.3, max_tokens=1536)
+            result["word_count"] = word_count
+            logger.info("Extracted from: %s", title)
             return result
         except Exception as e:
             logger.error("Extraction failed for %s: %s", title, e)
@@ -96,8 +176,26 @@ class ChapterExtractor:
                 "emotional_arc": "",
                 "hook_elements": [],
                 "tone_keywords": [],
-                "word_count": len(body),
+                "word_count": word_count,
             }
+
+    def _smart_chunk(self, text: str) -> list[str]:
+        """Split text into chunks at natural paragraph boundaries."""
+        paragraphs = text.split("\n")
+        chunks = []
+        current = ""
+        for para in paragraphs:
+            if len(current) + len(para) > self.CHUNK_SIZE and current:
+                chunks.append(current.strip())
+                # Keep overlap: last ~200 chars of previous chunk
+                overlap = current[-self.CHUNK_OVERLAP:] if len(current) > self.CHUNK_OVERLAP else current
+                current = overlap + "\n" + para
+            else:
+                current = current + "\n" + para if current else para
+
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks
 
     def extract_file(self, filepath: Path) -> dict:
         """Extract from a chapter file."""

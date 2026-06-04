@@ -40,6 +40,8 @@ XHS_STANDARD = CopyTemplate(
 ✨ {detail_header_2}：
 {detail_body_2}
 
+{rag_context}
+
 ✨ {closer_line}
 
 {emotional_cta}
@@ -205,6 +207,11 @@ STATION_INTRO = CopyTemplate(
 # ─── Template Engine ─────────────────────────────────────────
 
 
+def meta_val(key: str, meta: dict, ext: dict, default: str = "") -> str:
+    """Get value from meta dict, with fallback to default."""
+    return meta.get(key, default)
+
+
 class TemplateEngine:
     """Fills proven templates with extracted chapter details."""
 
@@ -219,9 +226,10 @@ class TemplateEngine:
         template: CopyTemplate,
         extraction: dict,
         novel_meta: dict,
+        rag_context: str = "",
     ) -> dict:
-        """Fill template, returning {"title": ..., "body": ..., "platform": ...}"""
-        ctx = self._build_context(extraction, novel_meta, template)
+        """Fill template, returning {title, body, platform, name, cover_suggestion, publish_time_hint}"""
+        ctx = self._build_context(extraction, novel_meta, template, rag_context)
 
         title = template.title_template.format(**ctx) if template.title_template else ""
         body = template.body_template.format(**ctx)
@@ -231,6 +239,8 @@ class TemplateEngine:
             "body": body.strip(),
             "platform": template.platform,
             "name": template.name,
+            "cover_suggestion": meta_val("cover_suggestion", novel_meta, extraction, ""),
+            "publish_time_hint": meta_val("publish_time_hint", novel_meta, extraction, ""),
         }
 
     def fill_all(
@@ -238,6 +248,7 @@ class TemplateEngine:
         platform: str,
         extraction: dict,
         novel_meta: dict,
+        rag_context: str = "",
     ) -> list[dict]:
         """Fill all templates for a platform."""
         if platform == "xiaohongshu":
@@ -251,9 +262,15 @@ class TemplateEngine:
         else:
             templates = self.xhs_templates
 
-        return [self.fill(t, extraction, novel_meta) for t in templates]
+        return [self.fill(t, extraction, novel_meta, rag_context) for t in templates]
 
-    def _build_context(self, ext: dict, meta: dict, template: CopyTemplate) -> dict:
+    def _build_context(
+        self,
+        ext: dict,
+        meta: dict,
+        template: CopyTemplate,
+        rag_context: str = "",
+    ) -> dict:
         """Build template context from extraction + novel metadata."""
         anomalies = ext.get("anomalies", [])
         scenes = ext.get("core_scenes", [])
@@ -271,15 +288,17 @@ class TemplateEngine:
 
         # Title hooks — prefer one_liner over hook_elements
         title_hook = ext.get("one_liner", "") or (hooks[0] if hooks else "档案员视角重读哈利波特")
-        contrast_title = f"HP同人居然能写出克苏鲁味！这本真的{meta.get('quality_word', '封神')}了！"
+        contrast_title = meta.get("contrast_title",
+            f"HP同人居然能写出克苏鲁味！这本真的{meta.get('quality_word', '绝')}了！")
         one_liner = ext.get("one_liner", "一位档案员用系统思维重新发现魔法世界")
 
         # Hook line
         hook_line = self._make_hook_line(ext, meta)
         emotional_cta = meta.get("emotional_cta", "🆘 冷门好看到爆！快给我火！")
 
-        # Character setup (✅ bullets)
-        character_setup = self._make_character_setup(ext, meta)
+        # Character setup (✅ bullets) — from profile or fallback
+        character_setup_lines = meta.get("character_setup", [])
+        character_setup = "\n".join(character_setup_lines) if character_setup_lines else self._make_character_setup(ext, meta)
 
         # Detail blocks (✨ sections)
         detail_blocks = self._make_detail_blocks(anomalies, moments, scenes)
@@ -287,12 +306,15 @@ class TemplateEngine:
         # Closer line
         closer_line = self._make_closer_line(ext, quotes)
 
-        # Contrast template
-        contrast_hook = f"给我冲{platform_name}版！！😭"
+        # Contrast template — single-platform: contrast reader perspectives
+        contrast_approach = meta.get("contrast_approach", "档案员视角")
+        common_approach = meta.get("common_approach", "校园恋爱+龙傲天")
+        contrast_hook = meta.get("contrast_hook", f"给我冲{platform_name}版！！😭")
         version_setup = (
-            f"如果说别人写HP同人是{meta.get('common_approach', '校园恋爱+龙傲天')}\n那{platform_name}这本就是完全不同的物种🔥"
+            f"你以为这是又一本{common_approach}的HP同人？\n"
+            f"不——这可是用{contrast_approach}重读魔法世界🔥"
         )
-        version_details = self._make_version_details(anomalies)
+        version_details = self._make_version_details_single(anomalies, contrast_approach)
 
         # Atmosphere
         atmosphere_detail = self._make_atmosphere(anomalies, moments)
@@ -300,26 +322,36 @@ class TemplateEngine:
         # Quick template bullets
         bullets = self._make_quick_bullets(anomalies, moments, quotes)
 
-        # Douyin
-        douyin_title = f"一个35岁的档案科长穿越到霍格沃茨，他的第一反应居然是..."
-        hook_5s = (
-            f"如果有一天你穿越到哈利波特的世界，你会干什么？"
-            f"学魔法？骑扫帚？认识哈利？"
-            f"——这个人的选择是：打开笔记本，开始记录异常。"
-        )
+        # Douyin — from profile or fallback
+        douyin_title = meta.get("douyin_title",
+            "一个35岁的档案科长穿越到霍格沃茨，他的第一反应居然是...")
+        hook_5s = meta.get("hook_5s",
+            "如果有一天你穿越到哈利波特的世界，你会干什么？学魔法？骑扫帚？认识哈利？——这个人的选择是：打开笔记本，开始记录异常。")
         script_build = self._make_douyin_build(ext, anomalies)
-        script_reveal = (
-            f"他发现这些异常点在地图上连成一个圆——圆心就在霍格沃茨地下。"
-            f"这不是又一本校园爽文，这是一本用成年人思维重新审视魔法世界的小说。"
-        )
-        script_close = f"想看完整版？左下角直接看。已更新{chapter_count}章，量大管饱。"
-        visual_hook = "哈利波特电影片段快剪（0.5s每个），最后定格霍格沃茨城堡"
-        visual_build = "档案室/笔记本/地图的俯拍镜头，字幕逐条弹出关键异常"
-        visual_reveal = "CG风格地下圆形结构示意图，逐层展开"
-        bgm_suggestion = "Hans Zimmer - Time (remix) / 低音弦乐营造悬疑感"
+        script_reveal = meta.get("script_reveal",
+            "他发现这些异常点在地图上连成一个圆——圆心就在霍格沃茨地下。这不是又一本校园爽文，这是一本用成年人思维重新审视魔法世界的小说。")
+        script_close = meta.get("script_close", f"想看完整版？左下角直接看。已更新{chapter_count}章，量大管饱。")
+        if "{chapter_count}" in script_close:
+            script_close = script_close.format(chapter_count=chapter_count)
+        visual_hook = meta.get("visual_hook", "哈利波特电影片段快剪（0.5s每个），最后定格霍格沃茨城堡")
+        visual_build = meta.get("visual_build", "档案室/笔记本/地图的俯拍镜头，字幕逐条弹出关键异常")
+        visual_reveal = meta.get("visual_reveal", "CG风格地下圆形结构示意图，逐层展开")
+        bgm_suggestion = meta.get("bgm_suggestion", "Hans Zimmer - Time (remix) / 低音弦乐营造悬疑感")
 
-        # Hashtags
-        hashtags_line = " ".join(f"#{t}" for t in meta.get("hashtags", template.hashtags))
+        # Hashtags — ensure # prefix
+        hashtags_raw = meta.get("hashtags", template.hashtags)
+        hashtags_line = " ".join(f"#{t}" if not t.startswith("#") else t for t in hashtags_raw)
+
+        # RAG context — format for template insertion
+        formatted_rag = ""
+        if rag_context:
+            chunks = rag_context.split("\n\n")
+            rag_lines = []
+            for chunk in chunks[:4]:
+                c = chunk.strip()[:200]
+                if c:
+                    rag_lines.append(f"✨ 来自前文: {c}")
+            formatted_rag = "\n".join(rag_lines)
 
         return {
             # ---- Common ----
@@ -341,6 +373,8 @@ class TemplateEngine:
             "detail_body_2": detail_blocks[1][1] if len(detail_blocks) > 1 else "",
             "closer_line": closer_line,
             "emotional_cta": emotional_cta,
+            # ---- RAG context ----
+            "rag_context": formatted_rag,
             # ---- Contrast template ----
             "contrast_hook": contrast_hook,
             "version_setup": version_setup,
@@ -366,7 +400,7 @@ class TemplateEngine:
             "bgm_suggestion": bgm_suggestion,
             # ---- Zhihu ----
             "opening_hook": meta.get("zhihu_opening",
-                f'说实话，看到"克苏鲁+HP"这个组合的时候我是拒绝的——又是一个蹭热度的缝合怪吧？结果看了三章，真香。'),
+                '说实话，看到"克苏鲁+HP"这个组合的时候我是拒绝的——又是一个蹭热度的缝合怪吧？结果看了三章，真香。'),
             "subtitle": meta.get("zhihu_subtitle",
                 "克苏鲁+哈利波特，这个缝合怪作品意外地好吃"),
             "setup_section": self._make_zhihu_setup(ext, meta),
@@ -374,15 +408,19 @@ class TemplateEngine:
             "core_appeal": self._make_zhihu_core(ext),
             "version_features": self._make_zhihu_features(meta),
             "closing_recommendation": meta.get("zhihu_closing",
-                "如果你喜欢番茄版的灵巧快节奏，也值得看看刺猬猫版——这不是同一个故事，这是同一个故事核的另一种演绎。"),
+                "如果你喜欢这本书的风格，它绝对能给你带来不一样的阅读体验。"),
             "tags_line": meta.get("tags_line", "哈利波特同人 克苏鲁 悬疑 理性主角 慢热 氛围"),
             # ---- Station intro ----
-            "character_intro": self._make_station_intro(ext, meta),
+            "character_intro": meta.get("novel_intro",
+                self._make_station_intro(ext, meta)),
             "setting_detail_1": self._make_station_detail(anomalies, 0),
             "setting_detail_2": self._make_station_detail(anomalies, 1),
-            "core_line": meta.get("core_line", "这是一座建立在封印之上的学校。而他，正在打开那本记录一切的手册。"),
+            "core_line": meta.get("reveal_line", "这是一座建立在封印之上的学校。而他，正在打开那本记录一切的手册。"),
             # ---- Hashtags ----
             "hashtags_line": hashtags_line,
+            # ---- Cover & Publish ----
+            "cover_suggestion": meta.get("cover_suggestion", ""),
+            "publish_time_hint": meta.get("publish_time_hint", ""),
         }
 
     # ─── Content builders ────────────────────────────────
@@ -437,13 +475,16 @@ class TemplateEngine:
         # Block 2: Best moment
         if moments:
             m = moments[0]
-            char = m.get("character", "主角")
-            moment = m.get("moment", "")
+            char = m.get("character", "主角") if isinstance(m, dict) else "主角"
+            moment = m.get("moment", "") if isinstance(m, dict) else str(m)
             header = f"{char}的那段真的绝了——"
             body_lines = [moment[:120]]
             if len(moments) > 1:
                 m2 = moments[1]
-                body_lines.append(f"{m2.get('character', '')}: {m2.get('moment', '')[:80]}")
+                if isinstance(m2, dict):
+                    body_lines.append(f"{m2.get('character', '')}: {m2.get('moment', '')[:80]}")
+                else:
+                    body_lines.append(str(m2)[:120])
             blocks.append((header, "\n".join(body_lines)))
         elif len(anomalies) >= 3:
             a3 = anomalies[2]
@@ -464,24 +505,23 @@ class TemplateEngine:
             return f"他不是救世主。他只是个职业病晚期的大叔，在魔法世界用{ext.get('tone_keywords', ['系统思维'])[0] if ext.get('tone_keywords') else '档案思维'}破案罢了。"
         return "他不是救世主。他只是个职业病晚期的大叔，在魔法世界用档案思维破案罢了。"
 
-    def _make_version_details(self, anomalies: list) -> list[str]:
+    def _make_version_details_single(self, anomalies: list, contrast_approach: str = "档案员视角") -> list[str]:
+        """Build single-platform contrast details (reader perspective vs protagonist lens)."""
         details = []
         if len(anomalies) >= 1:
             a = anomalies[0]
             details.append(
-                f"番茄版：发现{a.get('what', '异常')}→快速标记→走剧情\n"
-                f"刺猬猫版：发现异常→仔细观察→仔细记录→推理→标记→才走剧情"
+                f"普通读者视角：进入对角巷→逛店→买东西→走人\n"
+                f"{contrast_approach}视角：发现{a.get('what', '异常')}→记录→推理→标记→继续观察"
             )
         if len(anomalies) >= 2:
-            a2 = anomalies[1]
-            details.append(f"多了至少50%的细节铺陈🤯")
-        if len(anomalies) >= 3 or len(anomalies) == 2:
-            # Use moments or scenes for third
-            pass
+            details.append(f"别人看不到的细节，主角能发现——这就是{contrast_approach}的魅力🤯")
+        if len(anomalies) >= 3:
+            details.append("越读越觉得这个世界不对劲，又在细节里埋了太多伏笔")
         if len(details) < 2:
-            details.append("HP原著名词直接使用，不用代称不硬躲")
+            details.append("每一个普通场景背后都藏着不为人知的秘密")
         if len(details) < 3:
-            details.append("恐怖浓度比番茄版高两个档次")
+            details.append("读完之后你会发现，魔法世界远比你想象的更加诡异")
         return details
 
     def _make_atmosphere(self, anomalies: list, moments: list) -> str:
@@ -497,8 +537,11 @@ class TemplateEngine:
             ]
             # Add character quote if available
             for m in moments:
-                if m.get("moment", ""):
+                if isinstance(m, dict) and m.get("moment", ""):
                     lines.append(f"「{m['moment'][:60]}」")
+                    break
+                elif isinstance(m, str) and m:
+                    lines.append(f"「{m[:60]}」")
                     break
             return "\n".join(lines)
         return "古灵阁深处的门框上有细微刻痕——不是普通磨损，是某种规则的纹路，像被什么东西反复抓挠留下的。"

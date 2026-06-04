@@ -413,6 +413,19 @@ def serve_start(
 # ─── Novel promotion commands ─────────────────────────────────
 
 
+def _load_novel_profile(profile_path: str = "") -> dict:
+    """Load novel metadata from a JSON profile file.
+
+    Returns empty dict if file is missing, so template defaults kick in.
+    """
+    path = Path(profile_path) if profile_path else Path("data/novel_profile.json")
+    if not path.exists():
+        logger = logging.getLogger(__name__)
+        logger.warning("Novel profile not found: %s, using template defaults", path)
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 novel_app = typer.Typer(help="小说宣发专用命令")
 app.add_typer(novel_app, name="novel")
 
@@ -523,14 +536,17 @@ def novel_promote(
     chapter_file: str = typer.Option(
         ..., "--chapter", "-c", help="章节文件路径"
     ),
+    profile: str = typer.Option(
+        "", "--profile", help="小说配置文件路径（默认 data/novel_profile.json）"
+    ),
     novel_name: str = typer.Option(
-        "《霍格沃茨：我成了守秘人》", "--name", "-n", help="小说名称"
+        "", "--name", "-n", help="小说名称（覆盖配置文件）"
     ),
     platform_name: str = typer.Option(
-        "番茄小说", "--site", help="发布平台名称"
+        "", "--site", help="发布平台名称（覆盖配置文件）"
     ),
     chapter_count: str = typer.Option(
-        "61", "--count", help="已更新章节数"
+        "", "--count", help="已更新章节数（覆盖配置文件）"
     ),
     target_platform: str = typer.Option(
         "xiaohongshu", "--platform", "-p", help="目标宣发平台"
@@ -538,12 +554,19 @@ def novel_promote(
     use_rag: bool = typer.Option(
         True, "--rag/--no-rag", help="是否使用RAG知识库增强"
     ),
+    use_llm: bool = typer.Option(
+        False, "--use-llm", help="使用LLM动态生成策略和标题（替代纯模板）"
+    ),
+    no_review: bool = typer.Option(
+        False, "--no-review", help="跳过质量审核"
+    ),
     output_dir: str = typer.Option(
         "", "--output", "-o", help="输出目录（默认打印到终端）"
     ),
 ) -> None:
-    """一站式小说宣发文案生成（提取+模板+RAG）"""
+    """一站式小说宣发文案生成（提取+模板+RAG+审核）"""
     _setup_logging()
+    logger = logging.getLogger(__name__)
 
     from .agents.extractor import ChapterExtractor
     from .agents.templates import TemplateEngine
@@ -554,8 +577,33 @@ def novel_promote(
         console.print(f"[red]❌ 文件不存在: {chapter_file}[/red]")
         raise typer.Exit(1)
 
+    # Load novel profile
+    profile_data = _load_novel_profile(profile)
+    if not profile_data and not novel_name:
+        console.print("[yellow]⚠️ 未找到配置文件且未指定 --name，将使用模板默认值[/yellow]")
+
+    # Build novel_meta: profile data + CLI overrides
+    novel_meta = dict(profile_data)  # Start with profile
+    if novel_name:
+        novel_meta["novel_name"] = novel_name
+    if platform_name:
+        novel_meta["platform_name"] = platform_name
+    if chapter_count:
+        novel_meta["chapter_count"] = chapter_count
+
+    # Ensure closing_paragraph has interpolated values
+    if "closing_paragraph" in novel_meta:
+        novel_meta["closing_paragraph"] = novel_meta["closing_paragraph"].format(
+            novel_name=novel_meta.get("novel_name", ""),
+            chapter_count=novel_meta.get("chapter_count", ""),
+        )
+
+    console.print(f"[dim]📖 {novel_meta.get('novel_name', '未知')} | "
+                  f"{novel_meta.get('platform_name', '未知')} | "
+                  f"{novel_meta.get('chapter_count', '?')}章[/dim]")
+
     # Step 1: Extract chapter details
-    console.print("[bold]📋 Step 1/3: 提取章节关键信息...[/bold]")
+    console.print("[bold]📋 Step 1/4: 提取章节关键信息...[/bold]")
     extractor = ChapterExtractor()
     extraction = extractor.extract_file(path)
 
@@ -566,10 +614,9 @@ def novel_promote(
 
     # Step 2: RAG retrieval (optional)
     if use_rag:
-        console.print("[bold]🔍 Step 2/3: RAG检索相关知识...[/bold]")
+        console.print("[bold]🔍 Step 2/4: RAG检索相关知识...[/bold]")
         try:
             kb = NovelKnowledgeBase()
-            # Get relevant context
             chapter_context = kb.retrieve_for_chapter(extraction["title"], n_results=5)
             style_refs = kb.retrieve_style_reference(target_platform)
 
@@ -578,47 +625,83 @@ def novel_promote(
             if style_refs:
                 console.print(f"  ✓ 检索到 {len(style_refs)} 个风格参考")
 
-            # Build RAG context string
             rag_context = kb.format_context(chapter_context + style_refs)
         except Exception as e:
             console.print(f"  [yellow]⚠ RAG检索失败: {e}，跳过[/yellow]")
             rag_context = ""
     else:
-        console.print("[dim]⏭️  Step 2/3: 跳过RAG[/dim]")
+        console.print("[dim]⏭️  Step 2/4: 跳过RAG[/dim]")
         rag_context = ""
 
-    # Step 3: Fill templates
-    console.print(f"[bold]✍️  Step 3/3: 生成 {target_platform} 宣发文案...[/bold]")
+    # Step 3: Fill templates (optionally with LLM strategy)
+    console.print(f"[bold]✍️  Step 3/4: 生成 {target_platform} 宣发文案...[/bold]")
+
+    if use_llm:
+        client = get_client()
+        if client.health_check():
+            novel_meta = _apply_llm_strategy(client, extraction, novel_meta, target_platform)
+        else:
+            console.print("[yellow]⚠ Ollama 未运行，回退到纯模板模式[/yellow]")
 
     engine = TemplateEngine()
-    novel_meta = {
-        "novel_name": novel_name,
-        "platform_name": platform_name,
-        "chapter_count": chapter_count,
-        "genre_tags": "克苏鲁+HP同人",
-        "prejudice_reason": "书名太正经",
-        "reference_work": "《诡秘之主》的序列体系",
-        "reveal_line": "这是一座建立在封印之上的学校。而他，正在打开那本记录一切的手册。",
-        "closing_paragraph": (
-            f"主角林默，前世干了八年档案科，穿越成1991年即将入学霍格沃茨的孤儿。"
-            f"他的金手指不是系统，不是面板——是一双看了八年档案的眼睛，"
-            f"对不协调有着本能的过敏感。{novel_name}已更新{chapter_count}章，"
-            f"克苏鲁氛围+HP世界观的正经融合，不是缝合怪，是真的让人背后发凉。"
-        ),
-        "hashtags": [
-            "哈利波特同人", "克苏鲁", "悬疑", "理性主角", "小说推荐",
-            "HP同人", "冷门好文", "推理小说",
-        ],
-    }
+    results = engine.fill_all(target_platform, extraction, novel_meta, rag_context=rag_context)
 
-    results = engine.fill_all(target_platform, extraction, novel_meta)
-
+    # Display results
     console.print(f"\n{'='*60}")
     for i, r in enumerate(results):
         console.print(f"\n[bold]版本 {i+1}: {r['name']}[/bold]")
         console.print(f"[bold]标题:[/bold] {r['title']}")
         console.print(f"\n{r['body']}")
+        if r.get("cover_suggestion"):
+            console.print(f"\n🖼️  封面建议: {r['cover_suggestion']}")
+        if r.get("publish_time_hint"):
+            console.print(f"⏰ 发布时机: {r['publish_time_hint']}")
         console.print(f"\n{'='*60}")
+
+    # Step 4: Quality review
+    if not no_review:
+        console.print("[bold]🔍 Step 4/4: 质量审核...[/bold]")
+        from .agents.reviewer import ReviewAgent
+
+        client = get_client()
+        if client.health_check():
+            reviewer = ReviewAgent(client=client)
+
+            passed_results = []
+            for r in results:
+                title = r.get("title", "")
+                body = r.get("body", "")
+                report = reviewer.review(title, body, novel_meta.get("hashtags", []))
+
+                status_icon = "✅" if report.passed else "❌"
+                console.print(
+                    f"  [{status_icon}] {r['name']}: {report.overall_score}/100"
+                )
+                if report.compliance_issues:
+                    for issue in report.compliance_issues:
+                        console.print(f"    [red]• {issue}[/red]")
+                if report.quality_issues:
+                    for issue in report.quality_issues[:2]:
+                        console.print(f"    [yellow]⚠ {issue}[/yellow]")
+                if report.similarity_warning:
+                    console.print(f"    [yellow]⚠ {report.similarity_warning}[/yellow]")
+
+                if report.passed:
+                    passed_results.append(r)
+
+            if not passed_results:
+                console.print("[red]❌ 所有版本均未通过审核[/red]")
+                console.print("[yellow]建议: 调整 novel_profile.json 或使用 --no-review 跳过[/yellow]")
+                raise typer.Exit(1)
+
+            dropped = len(results) - len(passed_results)
+            if dropped > 0:
+                console.print(f"  [dim]已排除 {dropped} 个未通过版本[/dim]")
+            results = passed_results
+        else:
+            console.print("[yellow]⚠ Ollama 未运行，跳过审核[/yellow]")
+    else:
+        console.print("[dim]⏭️  Step 4/4: 跳过审核[/dim]")
 
     # Save to files
     if output_dir:
@@ -627,11 +710,97 @@ def novel_promote(
         for i, r in enumerate(results):
             fname = f"{extraction['title']}_{target_platform}_v{i+1}.md"
             filepath = out_path / fname
-            full_content = f"# {r['title']}\n\n{r['body']}"
-            filepath.write_text(full_content, encoding="utf-8")
+            lines = [f"# {r['title']}", "", r['body']]
+            if r.get("cover_suggestion"):
+                lines.append(f"\n🖼️ 封面建议: {r['cover_suggestion']}")
+            if r.get("publish_time_hint"):
+                lines.append(f"⏰ 发布时机: {r['publish_time_hint']}")
+            filepath.write_text("\n".join(lines), encoding="utf-8")
             console.print(f"  ✓ 已保存: {filepath}")
 
-    console.print(f"\n[dim]提示: 如需调整风格，可编辑模板后重新运行。[/dim]")
+    console.print(f"\n[dim]提示: 如需调整风格，编辑 data/novel_profile.json 后重新运行。[/dim]")
+
+
+# ─── LLM strategy helpers ───────────────────────────────────────
+
+
+def _apply_llm_strategy(
+    client,
+    extraction: dict,
+    novel_meta: dict,
+    target_platform: str,
+) -> dict:
+    """Use novel-specific prompts to generate dynamic strategy and headlines.
+
+    Mutates and returns novel_meta with LLM-generated content injected.
+    """
+    from .prompts.novel import (
+        NOVEL_STRATEGY_SYSTEM, NOVEL_STRATEGY_USER,
+        NOVEL_HEADLINE_SYSTEM, NOVEL_HEADLINE_USER,
+    )
+
+    console = Console()
+
+    # Build selling points from extraction
+    anomalies = extraction.get("anomalies", [])
+    moments = extraction.get("character_moments", [])
+    quotes = extraction.get("quotable_lines", [])
+
+    selling_points = [
+        f"章节: {extraction.get('title', '')}",
+        f"一句话钩子: {extraction.get('one_liner', '')}",
+    ]
+    if anomalies:
+        selling_points.append(f"关键异常: {anomalies[0].get('detail', '')[:100]}")
+    if moments:
+        selling_points.append(f"角色高光: {moments[0].get('moment', '')[:100]}")
+    if quotes:
+        selling_points.append(f"金句: {quotes[0][:100]}")
+
+    # 1. LLM Strategy selection
+    try:
+        strategy = client.chat_json([
+            {"role": "system", "content": NOVEL_STRATEGY_SYSTEM},
+            {"role": "user", "content": NOVEL_STRATEGY_USER.format(
+                product_name=novel_meta.get("novel_name", ""),
+                product_desc=extraction.get("one_liner", ""),
+                target_audience=f"{target_platform} 小说推荐受众",
+                style_notes=f"本章情感走向: {extraction.get('emotional_arc', '')}",
+                key_selling_points="\n".join(selling_points),
+                success_cases="（使用内置模板参考）",
+            )},
+        ], temperature=0.5)
+
+        novel_meta["llm_strategy"] = strategy
+        console.print(f"  ✓ LLM策略: {strategy.get('content_type', '?')} / "
+                      f"{strategy.get('headline_formula', '?')} / "
+                      f"{strategy.get('tone', '?')}")
+    except Exception as e:
+        console.print(f"  [yellow]⚠ LLM策略生成失败: {e}[/yellow]")
+
+    # 2. LLM Headline generation
+    try:
+        headlines_result = client.chat_json([
+            {"role": "system", "content": NOVEL_HEADLINE_SYSTEM},
+            {"role": "user", "content": NOVEL_HEADLINE_USER.format(
+                product_name=novel_meta.get("novel_name", ""),
+                key_selling_points="\n".join(selling_points),
+                content_type=novel_meta.get("llm_strategy", {}).get(
+                    "content_type", "emotional"
+                ),
+                target_audience=f"{target_platform} 用户",
+                tone=novel_meta.get("llm_strategy", {}).get("tone", "亲切口语"),
+                count=3,
+            )},
+        ], temperature=0.8)
+
+        novel_meta["generated_headlines"] = headlines_result.get("candidates", [])
+        if novel_meta["generated_headlines"]:
+            console.print(f"  ✓ LLM生成了 {len(novel_meta['generated_headlines'])} 个候选标题")
+    except Exception as e:
+        console.print(f"  [yellow]⚠ LLM标题生成失败: {e}[/yellow]")
+
+    return novel_meta
 
 
 # ─── Setup command ────────────────────────────────────────────

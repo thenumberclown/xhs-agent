@@ -58,7 +58,7 @@ class NovelKnowledgeBase:
                 "chunk_type": "chapter",
                 "total_chunks": len(chunks),
             }
-            self.vs.add_case(
+            self.vs.add_novel_chunk(
                 doc_id=chunk_id,
                 text=chunk,
                 metadata=meta,
@@ -93,7 +93,7 @@ class NovelKnowledgeBase:
                 "chunk_index": i,
                 "chunk_type": "setting",
             }
-            self.vs.add_case(
+            self.vs.add_novel_chunk(
                 doc_id=chunk_id,
                 text=chunk,
                 metadata=meta,
@@ -118,7 +118,7 @@ class NovelKnowledgeBase:
                 "chunk_type": "promo",
                 "chunk_index": i,
             }
-            self.vs.add_case(
+            self.vs.add_novel_chunk(
                 doc_id=chunk_id,
                 text=section.strip(),
                 metadata=meta,
@@ -150,7 +150,7 @@ class NovelKnowledgeBase:
         if chunk_type:
             where = {"chunk_type": chunk_type}
 
-        results = self.vs.search_similar_cases(
+        results = self.vs.search_novel_chunks(
             query=query,
             n_results=n_results,
         )
