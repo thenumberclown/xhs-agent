@@ -401,11 +401,13 @@ def serve_start(
     host: str = typer.Option("0.0.0.0", "--host"),
     port: int = typer.Option(8000, "--port"),
 ) -> None:
-    """启动 FastAPI 服务（预留 Web API）"""
+    """启动 FastAPI 服务"""
     _setup_logging()
-    console.print(f"[bold]🚀 启动 API 服务 http://{host}:{port}[/bold]")
-    console.print("[yellow]API 服务功能将在后续版本中实现[/yellow]")
-    console.print("当前请使用 CLI 命令: [bold]xhs-agent generate --help[/bold]")
+    import uvicorn
+    from .api import app as fastapi_app
+    console.print(f"[bold]🚀 XHS Agent API 启动: http://{host}:{port}[/bold]")
+    console.print(f"[dim]文档: http://{host}:{port}/docs[/dim]")
+    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
 
 
 # ─── Novel promotion commands ─────────────────────────────────
