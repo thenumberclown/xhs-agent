@@ -1,0 +1,22 @@
+[
+  {
+    "title": "测试案例-成功",
+    "body": "这是一个测试用的成功案例，包含典型的五段式结构和互动引导。正文内容足够长来模拟真实场景。推荐这个产品给大家的原因是性价比很高。",
+    "platform": "xiaohongshu",
+    "hashtags": ["测试", "小红书"],
+    "likes": 5000,
+    "collects": 4000,
+    "comments": 500,
+    "quality_label": "success"
+  },
+  {
+    "title": "测试案例-失败",
+    "body": "这个产品太差了不推荐买",
+    "platform": "xiaohongshu",
+    "hashtags": [],
+    "likes": 5,
+    "collects": 2,
+    "comments": 0,
+    "quality_label": "failure"
+  }
+]

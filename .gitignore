@@ -1,0 +1,43 @@
+# ─── Python ───────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# ─── Virtual Environment ──────────────
+.venv/
+venv/
+env/
+.env
+
+# ─── IDE / Editor ─────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ─── Data (runtime artifacts) ─────────
+data/chroma/
+data/xhs_agent.db
+data/outputs/
+
+# ─── OS ───────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Test / Coverage ──────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# ─── Docker ───────────────────────────
+# Keep Dockerfile and docker-compose.yml
+# Ignore nothing here
+
+# ─── Misc ─────────────────────────────
+*.log
