@@ -233,6 +233,43 @@ async def get_stats(platform: str = "xiaohongshu"):
     return tracker.get_learning_stats(platform=platform)
 
 
+# ─── Format API ───────────────────────────────────────────
+
+
+@app.post("/format-all")
+async def format_all_api(
+    text: str = Form(""),
+    platform: str = Form("xiaohongshu"),
+):
+    """Apply all 8 trending formats to text, return scored results."""
+    from .formatter import format_all
+    results = format_all(text, platform)
+    return {
+        "results": [
+            {
+                "id": r.template_id,
+                "name": r.template_name,
+                "icon": r.template_icon,
+                "title": r.title,
+                "body": r.body,
+                "tags": r.tags,
+                "formatted_text": r.formatted_text,
+                "score": r.score,
+                "score_detail": r.score_detail,
+                "warnings": r.warnings,
+                "images": r.image_suggestions,
+            }
+            for r in results
+        ]
+    }
+
+
+@app.get("/format", response_class=HTMLResponse)
+async def format_page():
+    """Formatting tool page."""
+    return FORMAT_UI
+
+
 # ─── Novel Promote API ───────────────────────────────────────
 
 
@@ -500,5 +537,188 @@ function showError(msg) {
 function escapeHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 </script>
 
+</body>
+</html>"""
+
+
+FORMAT_UI = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎨 文案排版工具</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#f0ebe3;color:#333}
+.topbar{background:#fff;padding:.8rem 1.5rem;display:flex;align-items:center;gap:1rem;box-shadow:0 1px 4px rgba(0,0,0,.05);position:sticky;top:0;z-index:10}
+.topbar h1{font-size:1.2rem;color:#e74c3c}
+.topbar a{color:#999;text-decoration:none;font-size:13px}
+.topbar a:hover{color:#e74c3c}
+.topbar select{padding:.4rem .8rem;border:1px solid #ddd;border-radius:6px;font-size:14px}
+.btn{padding:.5rem 1.2rem;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px;color:#fff}
+.btn-format{background:#e74c3c}
+.btn-format:hover{background:#c0392b}
+.btn-format:disabled{background:#ccc;cursor:not-allowed}
+.main{display:flex;height:calc(100vh - 56px)}
+.left{width:340px;min-width:340px;background:#fff;padding:1rem;display:flex;flex-direction:column;gap:.8rem;overflow-y:auto}
+.left textarea{width:100%;height:100%;min-height:300px;flex:1;border:2px solid #eee;border-radius:10px;padding:1rem;font-size:14px;line-height:1.7;font-family:inherit;resize:none}
+.left textarea:focus{outline:none;border-color:#e74c3c}
+.hint{font-size:12px;color:#999}
+.right{flex:1;overflow-y:auto;padding:1rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:1rem}
+.card{background:#fff;border-radius:12px;padding:1rem;box-shadow:0 2px 8px rgba(0,0,0,.04);border:2px solid transparent;transition:.2s}
+.card:hover{box-shadow:0 4px 16px rgba(0,0,0,.08)}
+.card.selected{border-color:#e74c3c}
+.card-header{display:flex;align-items:center;gap:.5rem;margin-bottom:.5rem}
+.card-icon{font-size:1.5rem}
+.card-name{font-weight:700;font-size:15px}
+.card-score{margin-left:auto;font-size:1.3rem;font-weight:700}
+.score-high{color:#27ae60}
+.score-mid{color:#e67e22}
+.score-low{color:#e74c3c}
+.card-badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:#ffeaa7;color:#d35400;font-weight:700}
+.card-detail{font-size:12px;color:#888;margin-top:.5rem;line-height:1.6}
+.card-detail span{display:block}
+.card-warn{color:#e67e22}
+.phone{width:280px;margin:.8rem auto 0;background:#fafafa;border-radius:16px;padding:14px 12px;border:1px solid #eee}
+.phone-top{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.phone-avatar{width:24px;height:24px;border-radius:50%;background:#e74c3c;color:#fff;font-size:12px;display:flex;align-items:center;justify-content:center}
+.phone-user{font-size:11px;font-weight:600}
+.phone-title{font-size:13px;font-weight:700;margin-bottom:6px;line-height:1.5}
+.phone-body{font-size:11px;line-height:1.6;color:#555;max-height:120px;overflow:hidden;white-space:pre-wrap}
+.phone-tags{font-size:10px;color:#3498db;margin-top:6px}
+.btn-copy{background:#27ae60;font-size:12px;padding:.3rem .8rem;margin-left:.5rem;border:none;border-radius:6px;cursor:pointer;color:#fff}
+.btn-copy:hover{background:#219a52}
+.empty{text-align:center;padding:4rem 1rem;color:#bbb}
+.empty .big{font-size:4rem}
+.empty p{margin-top:1rem}
+@media(max-width:800px){.main{flex-direction:column}.left{width:100%;min-width:0;height:200px}}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1>🎨 文案排版</h1>
+  <select id="platform">
+    <option value="xiaohongshu">小红书</option>
+    <option value="douyin">抖音</option>
+    <option value="zhihu">知乎</option>
+  </select>
+  <button class="btn btn-format" onclick="doFormat()">🔄 生成全部排版</button>
+  <a href="/">← 返回生成</a>
+</div>
+
+<div class="main">
+<div class="left">
+  <div class="hint">📋 粘贴完整文案（标题+正文+#标签）：</div>
+  <textarea id="textInput" placeholder="在此粘贴文案...
+
+标题和正文会自动识别
+标签以 # 开头即可
+如：#哈利波特同人 #小说推荐"></textarea>
+</div>
+<div class="right" id="results">
+  <div class="empty">
+    <div class="big">📝</div>
+    <p>粘贴文案，点击按钮<br>自动生成 8 种排版 + 评分</p>
+  </div>
+</div>
+</div>
+
+<script>
+var currentData = null;
+var selectedId = null;
+
+async function doFormat() {
+  var text = document.getElementById('textInput').value.trim();
+  if (!text) { alert('请先粘贴文案'); return; }
+
+  var btn = document.querySelector('.btn-format');
+  btn.disabled = true;
+  btn.textContent = '⏳ 生成中...';
+  document.getElementById('results').innerHTML = '<div class="empty"><div class="big">⏳</div><p>正在生成 8 种排版...</p></div>';
+
+  try {
+    var form = new FormData();
+    form.append('text', text);
+    form.append('platform', document.getElementById('platform').value);
+
+    var resp = await fetch('/format-all', { method: 'POST', body: form });
+    if (!resp.ok) throw new Error('Server error: ' + resp.status);
+    var data = await resp.json();
+    currentData = data;
+    renderResults(data);
+  } catch(e) {
+    document.getElementById('results').innerHTML = '<div class="empty"><div class="big">❌</div><p>' + e.message + '</p></div>';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 生成全部排版';
+  }
+}
+
+function renderResults(data) {
+  var results = data.results || [];
+  if (!results.length) { document.getElementById('results').innerHTML = '<div class="empty"><p>无结果</p></div>'; return; }
+  var html = '<div class="grid">';
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var isBest = (i === 0 && r.score >= 80);
+    var sc = r.score >= 80 ? 'score-high' : (r.score >= 60 ? 'score-mid' : 'score-low');
+    var sel = r.id === selectedId ? ' selected' : '';
+    html += '<div class="card' + sel + '" id="card-' + r.id + '">';
+    html += '<div class="card-header"><span class="card-icon">' + esc(r.icon) + '</span><span class="card-name">' + esc(r.name) + '</span>';
+    if (isBest) html += '<span class="card-badge">⭐推荐</span>';
+    html += '<span class="card-score ' + sc + '">' + r.score + '</span></div>';
+    html += '<div class="card-detail">';
+    var keys = Object.keys(r.score_detail || {});
+    for (var j = 0; j < keys.length; j++) {
+      var v = r.score_detail[keys[j]];
+      html += '<span class="' + (v.indexOf('⚠️') === 0 ? 'card-warn' : '') + '">' + esc(v) + '</span>';
+    }
+    html += '</div>';
+    html += '<div class="phone"><div class="phone-top"><div class="phone-avatar">📖</div><div class="phone-user">推书小助手 · 刚刚</div></div>';
+    html += '<div class="phone-title">' + esc(r.title || '标题') + '</div>';
+    html += '<div class="phone-body">' + esc((r.body || '').substring(0, 150)) + '...</div>';
+    html += '<div class="phone-tags">' + (r.tags || []).map(function(t) { return '#' + esc(t); }).join(' ') + '</div></div>';
+    html += '<div style="margin-top:.6rem;display:flex;gap:.4rem">';
+    html += '<button class="btn-copy" onclick="event.stopPropagation();copyOne(\'' + r.id + '\',1)">📋 复制全文</button>';
+    html += '<button class="btn-copy" onclick="event.stopPropagation();copyOne(\'' + r.id + '\',2)" style="background:#888">🏷 复制标签</button>';
+    html += '</div></div>';
+  }
+  html += '</div>';
+  document.getElementById('results').innerHTML = html;
+}
+
+function copyOne(id, mode) {
+  var r = null;
+  for (var i = 0; i < (currentData?.results||[]).length; i++) {
+    if (currentData.results[i].id === id) { r = currentData.results[i]; break; }
+  }
+  if (!r) return;
+  var text = mode === 1 ? r.formatted_text : (r.tags || []).map(function(t){return '#'+t;}).join(' ');
+  var ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.left = '-9999px';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  flash(mode === 1 ? '📋 已复制全文！' : '🏷 已复制标签！');
+}
+
+function flash(msg) {
+  var el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#27ae60;color:#fff;padding:.6rem 1.5rem;border-radius:8px;z-index:999;font-weight:600;';
+  document.body.appendChild(el);
+  setTimeout(function() { el.remove(); }, 1500);
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
 </body>
 </html>"""
