@@ -18,8 +18,8 @@ class OllamaConfig(BaseModel):
     host: str = "http://localhost:11434"
     main_model: str = "qwen3:8b"
     light_model: str = "qwen3:4b"
-    timeout: float = 120.0
-    max_retries: int = 3
+    timeout: float = 300.0
+    max_retries: int = 2
     retry_delay: float = 2.0
 
 
