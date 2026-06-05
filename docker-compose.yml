@@ -1,5 +1,5 @@
 services:
-  # XHS Agent 应用 (复用宿主机 Ollama + Chroma)
+  # ─── XHS Agent 应用 (复用宿主机 Ollama + Chroma) ─────────────
   app:
     build: .
     container_name: xhs-app
@@ -13,7 +13,45 @@ services:
       - OLLAMA_HOST=http://host.docker.internal:11434
       - XHS_AGENT_DB_PATH=/app/data/xhs_agent.db
       - XHS_AGENT_DATA_DIR=/app/data
+      - FORMAT_URL=http://format:8001
+      - IMG_URL=http://img:8002
+      - VIDEO_URL=http://video:8003
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["python", "-m", "src.main", "serve", "start"]
+    restart: unless-stopped
+
+  # ─── 文案排版服务 ────────────────────────────────────────────
+  format:
+    build:
+      context: .
+      dockerfile: Dockerfile.format
+    container_name: xhs-format
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+  # ─── 图片生成服务 (ComfyUI + Ollama) ──────────────────────────
+  img:
+    build:
+      context: .
+      dockerfile: Dockerfile.img
+    container_name: xhs-img
+    ports:
+      - "8002:8002"
+    environment:
+      - COMFY_URL=http://host.docker.internal:8188
+      - OLLAMA_URL=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # ─── 视频生成服务 (edge-tts + ffmpeg) ─────────────────────────
+  video:
+    build:
+      context: .
+      dockerfile: Dockerfile.video
+    container_name: xhs-video
+    ports:
+      - "8003:8003"
     restart: unless-stopped
