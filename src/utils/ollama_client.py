@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -168,5 +169,10 @@ _default_client: OllamaClient | None = None
 def get_client() -> OllamaClient:
     global _default_client
     if _default_client is None:
-        _default_client = OllamaClient()
+        config = OllamaConfig(
+            host=os.environ.get("OLLAMA_HOST", "http://localhost:11434"),
+            main_model=os.environ.get("OLLAMA_MAIN_MODEL", "qwen3:8b"),
+            light_model=os.environ.get("OLLAMA_LIGHT_MODEL", "qwen3:4b"),
+        )
+        _default_client = OllamaClient(config)
     return _default_client
