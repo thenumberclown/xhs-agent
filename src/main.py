@@ -400,14 +400,14 @@ def stats_cases(
 def serve_start(
     host: str = typer.Option("0.0.0.0", "--host"),
     port: int = typer.Option(8000, "--port"),
+    workers: int = typer.Option(4, "--workers", "-w"),
 ) -> None:
     """启动 FastAPI 服务"""
     _setup_logging()
     import uvicorn
-    from .api import app as fastapi_app
     console.print(f"[bold]🚀 XHS Agent API 启动: http://{host}:{port}[/bold]")
     console.print(f"[dim]文档: http://{host}:{port}/docs[/dim]")
-    uvicorn.run(fastapi_app, host=host, port=port, log_level="info")
+    uvicorn.run("src.api:app", host=host, port=port, workers=workers, log_level="info")
 
 
 # ─── Novel promotion commands ─────────────────────────────────
