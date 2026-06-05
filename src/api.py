@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
 
+import httpx
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from .storage.database import Database
@@ -270,6 +272,87 @@ async def format_page():
     return FORMAT_UI
 
 
+# ─── Image & Video Proxy ──────────────────────────────────────
+
+IMG_SERVICE = os.environ.get("IMG_URL", "http://localhost:8002")
+VIDEO_SERVICE = os.environ.get("VIDEO_URL", "http://localhost:8003")
+
+
+@app.get("/img", response_class=HTMLResponse)
+async def img_page():
+    """Image generation tool page — proxy from img service."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{IMG_SERVICE}/")
+            return HTMLResponse(content=r.text)
+    except Exception:
+        return HTMLResponse(content=IMG_FALLBACK, status_code=200)
+
+
+@app.post("/img/generate")
+async def img_generate_proxy(
+    prompt: str = Form(""),
+    style: str = Form(""),
+    count: int = Form(1),
+):
+    """Proxy image generation to img service."""
+    async with httpx.AsyncClient(timeout=180) as client:
+        form = {"prompt": prompt, "style": style, "count": str(count)}
+        r = await client.post(f"{IMG_SERVICE}/generate", data=form)
+        return r.json()
+
+
+@app.get("/img/proxy-image")
+async def img_proxy_image(filename: str = "", subfolder: str = "", img_type: str = "output"):
+    """Proxy generated image from img service."""
+    params = f"filename={filename}&subfolder={subfolder}&img_type={img_type}"
+    async with httpx.AsyncClient(timeout=30) as client:
+        r = await client.get(f"{IMG_SERVICE}/proxy-image?{params}")
+        from fastapi.responses import Response
+        return Response(content=r.content, media_type=r.headers.get("content-type", "image/png"))
+
+
+@app.get("/video", response_class=HTMLResponse)
+async def video_page():
+    """Video generation tool page — proxy from video service."""
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            r = await client.get(f"{VIDEO_SERVICE}/")
+            return HTMLResponse(content=r.text)
+    except Exception:
+        return HTMLResponse(content=VIDEO_FALLBACK, status_code=200)
+
+
+@app.post("/video/generate-video")
+async def video_generate_proxy(
+    text: str = Form(""),
+    voice: str = Form("xiaoxiao"),
+    rate: str = Form("正常"),
+    image_files: list[UploadFile] = File(default=[]),
+):
+    """Proxy video generation to video service."""
+    async with httpx.AsyncClient(timeout=300) as client:
+        form = {"text": text, "voice": voice, "rate": rate}
+        files = []
+        for f in image_files:
+            files.append(("image_files", (f.filename, await f.read(), f.content_type or "image/png")))
+        r = await client.post(f"{VIDEO_SERVICE}/generate-video", data=form, files=files)
+        return r.json()
+
+
+@app.get("/video/download/{job_id}")
+async def video_download_proxy(job_id: str):
+    """Proxy video download from video service."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        r = await client.get(f"{VIDEO_SERVICE}/download/{job_id}")
+        from fastapi.responses import Response
+        return Response(
+            content=r.content,
+            media_type=r.headers.get("content-type", "video/mp4"),
+            headers={"Content-Disposition": f"attachment; filename=video-{job_id}.mp4"},
+        )
+
+
 # ─── Novel Promote API ───────────────────────────────────────
 
 
@@ -422,6 +505,13 @@ button:disabled { background: #ccc; cursor: not-allowed; }
 <body>
 
 <div class="container">
+
+<nav style="display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap">
+  <a href="/" style="padding:.5rem 1rem;border-radius:6px;background:#e74c3c;color:#fff;text-decoration:none;font-weight:600;font-size:14px">📝 文案生成</a>
+  <a href="/format" style="padding:.5rem 1rem;border-radius:6px;background:#eee;color:#555;text-decoration:none;font-weight:600;font-size:14px">🎨 排版</a>
+  <a href="/img" style="padding:.5rem 1rem;border-radius:6px;background:#eee;color:#555;text-decoration:none;font-weight:600;font-size:14px">🖼 图片</a>
+  <a href="/video" style="padding:.5rem 1rem;border-radius:6px;background:#eee;color:#555;text-decoration:none;font-weight:600;font-size:14px">🎬 视频</a>
+</nav>
 
 <header>
   <h1>📝 XHS Agent</h1>
@@ -720,5 +810,57 @@ function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 </script>
+</body>
+</html>"""
+
+
+IMG_FALLBACK = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🖼 图片生成</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#f5f0eb;color:#333;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#fff;border-radius:12px;padding:2rem;box-shadow:0 2px 12px rgba(0,0,0,.06);text-align:center;max-width:500px}
+h1{font-size:2rem;margin-bottom:1rem} p{color:#888;margin-bottom:1.5rem}
+.btn{display:inline-block;padding:.7rem 1.5rem;background:#e74c3c;color:#fff;border-radius:8px;text-decoration:none;font-weight:600}
+.btn:hover{background:#c0392b}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🖼</h1>
+  <h2>图片生成服务未启动</h2>
+  <p>请先启动图片生成服务：<br><code>docker compose up -d img</code><br>或<br><code>python img_gen.py</code></p>
+  <a href="/" class="btn">← 返回主页</a>
+</div>
+</body>
+</html>"""
+
+
+VIDEO_FALLBACK = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🎬 视频生成</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;background:#f5f0eb;color:#333;display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{background:#fff;border-radius:12px;padding:2rem;box-shadow:0 2px 12px rgba(0,0,0,.06);text-align:center;max-width:500px}
+h1{font-size:2rem;margin-bottom:1rem} p{color:#888;margin-bottom:1.5rem}
+.btn{display:inline-block;padding:.7rem 1.5rem;background:#e74c3c;color:#fff;border-radius:8px;text-decoration:none;font-weight:600}
+.btn:hover{background:#c0392b}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎬</h1>
+  <h2>视频生成服务未启动</h2>
+  <p>请先启动视频生成服务：<br><code>docker compose up -d video</code><br>或<br><code>python video_gen.py</code></p>
+  <a href="/" class="btn">← 返回主页</a>
+</div>
 </body>
 </html>"""
