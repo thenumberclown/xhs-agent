@@ -486,11 +486,11 @@ def _parse_raw(text: str) -> PostData:
     tags = []
     for i in range(body_start, len(lines)):
         line = lines[i].strip()
-        if line.startswith("#"):
-            tags.append(line.lstrip("#").strip())
-        elif line and all(t.startswith("#") for t in line.split()):
+        if line and all(t.startswith("#") for t in line.split()):
             for t in line.split():
                 tags.append(t.lstrip("#").strip())
+        elif line.startswith("#"):
+            tags.append(line.lstrip("#").strip())
         else:
             body_lines.append(lines[i])
 
